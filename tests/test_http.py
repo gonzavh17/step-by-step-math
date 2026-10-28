@@ -73,3 +73,30 @@ def test_busy_when_all_slots_taken(monkeypatch):
     finally:
         worker.join()
     assert sandbox.run_isolated(sum, [1, 2]) == 3  # slot released
+
+
+def test_board_page(client):
+    board_id = server.boards.put({"problem": "\\int x\\,dx", "method": "auto", "steps": [], "palette": {}, "result": "x"})
+    r = client.get(f"/board/{board_id}")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    assert "default-src 'none'" in r.headers["content-security-policy"]
+    assert r.headers["referrer-policy"] == "no-referrer"
+    assert r.headers["cache-control"] == "no-store"
+    assert board_id in r.text
+
+
+def test_board_page_unknown_is_404(client):
+    r = client.get("/board/does-not-exist")
+    assert r.status_code == 404
+    assert r.headers["referrer-policy"] == "no-referrer"
+
+
+def test_public_base_url(monkeypatch):
+    monkeypatch.delenv("STEP_BY_STEP_MATH_PUBLIC_URL", raising=False)
+    monkeypatch.delenv("RAILWAY_PUBLIC_DOMAIN", raising=False)
+    assert server.public_base_url() is None
+    monkeypatch.setenv("RAILWAY_PUBLIC_DOMAIN", "app.up.railway.app")
+    assert server.public_base_url() == "https://app.up.railway.app"
+    monkeypatch.setenv("STEP_BY_STEP_MATH_PUBLIC_URL", "https://math.example.com/")
+    assert server.public_base_url() == "https://math.example.com"

@@ -34,8 +34,10 @@ Sandbox (proceso hijo)          ← timeout + límite de memoria; corre tasks.py
 Motores por dominio             ← análisis (SymPy); más adelante lógica, límites, series
    │  devuelven list[Step]
    ▼
-Renderer de pizarrón            ← HTML + KaTeX, común a todos los motores
+Renderer de pizarrón            ← HTML + KaTeX, común a todos los motores (board/board.html)
 ```
+
+Los pasos no vuelven al modelo: el servidor los guarda en `BoardStore` (memoria) y devuelve un `board_id`. El pizarrón los pide con la tool `get_board`, que solo la app puede llamar.
 
 Un motor por materia, un único formato de paso y un único renderer.
 
@@ -43,27 +45,32 @@ Un motor por materia, un único formato de paso y un único renderer.
 
 Todo motor devuelve una lista de `Step`. Es la pieza más importante del diseño: definirla bien antes que todo lo demás.
 
+Definido en `steps.py`:
+
 ```python
-@dataclass
+@dataclass(frozen=True)
 class Step:
-    before: str            # LaTeX of the expression before the step
-    after: str             # LaTeX after the step
-    rule: str              # id of the applied rule: "parts", "substitution", "basic", "partial_fractions", ...
-    highlight: list[str]   # subexpressions (LaTeX) that changed, to color them
-    note: str              # 1 line for the margin: "u = x → du = dx" (user-facing text, may be in Spanish)
-    auxiliary: dict        # rule data: {"u": "x", "du": "dx", "dv": "e^x dx", "v": "e^x"}
-    verified: bool
+    before: str                  # LaTeX before the step (highlighted parts already colored)
+    after: str                   # LaTeX after the step
+    rule: str                    # rule id: "parts", "substitution", "power", "back_substitution", ...
+    note: str                    # one line for the margin, in Spanish; inline math between \( and \)
+    highlight: list[Highlight]   # Highlight(role, latex): what the step touched, by role
+    aux: dict[str, str]          # rule data as LaTeX: {"u": "x", "du": "dx", "dv": "e^{x}\\,dx", "v": "e^{x}"}
+    verified: bool = True        # False only when the step was checked numerically, not symbolically
 ```
 
-Cada regla declara qué subexpresión toca: así el renderer sabe qué resaltar, que es la parte difícil del pizarrón.
+- El motor colorea `before`/`after` con `\textcolor{hex}{...}` usando `PALETTE` (un color por rol: `u`, `du`, `dv`, `v`, `const`, `result`, `changed`). Así el renderer no necesita lógica: solo dibuja.
+- Solo se colorea una subexpresión si aparece **una sola vez** en la expresión (`tex_with_part`); si no, el paso va sin color antes que colorear de más.
+- Paréntesis según el contexto (`needs_parens_at`): solo dentro de un producto o como base de una potencia.
 
 ## Tools (MVP)
 
 | Tool | Input | Output al modelo |
 |---|---|---|
-| `integrate` | `expression`, `variable`, `lower`/`upper` opcionales; desde el paso 3: `method` y sus params (`u`, `dv`, ...) | `result` (con `+ C`), `latex`, `method` (`manualintegrate` / `integrate_fallback`), `verification`; en definidas `status` (`converges`/`diverges`), `improper`, `discontinuities`, `explanation`, `warnings` |
+| `integrate` | `expression`, `variable`, `lower`/`upper` opcionales, `method` (`auto` / `parts` / `substitution` / `partial_fractions`), `u`, `dv` | `result` (con `+ C`), `latex`, `method`, `verification`, `steps` (cantidad), `board_id` y `board_url` (http) o `board_path` (stdio), `generic_fallback` si no hubo pasos de clase; en definidas `status` (`converges`/`diverges`), `improper`, `discontinuities`, `explanation`, `warnings` |
 | `verify_antiderivative` | `integrand`, `antiderivative`, `variable` | `status` (`verified` / `inconclusive` / `incorrect`) + diferencia simplificada y nota |
 | `differentiate` | `expression`, `variable` | resultado (texto + LaTeX) |
+| `get_board` | `board_id` | **solo para la app** (`_meta.ui.visibility: ["app"]`): el board completo. Lee el store directo, sin sandbox ni cupo de concurrencia |
 
 Mantener pocas tools: las definiciones se mandan en cada mensaje y cada una suma tokens de entrada.
 
@@ -77,7 +84,14 @@ Las descripciones de las tools son lo único que el modelo sabe de ellas. Deben 
   - **Partes:** recibir `u` (y opcionalmente `dv`); calcular `du` y `v`; armar `u·v − ∫v du`; la integral restante se resuelve recursivamente (con método automático si el usuario no especificó).
   - **Fracciones simples:** `sp.apart()`; mostrar el planteo con A, B, C como en clase.
 - Constante de integración `+ C` siempre explícita al final (se agrega al formatear, no dentro de la expresión).
-- Implementado en `engines/calculus/integrals.py`:
+- Pasos en `engines/calculus/integration_steps.py` (`integrate_with_steps`):
+  - `auto`: recorre el árbol de `integral_steps` (ConstantTimes, Add, URule, Parts, CyclicParts, Rewrite, atómicas) generando un `Step` por transformación. Si no hay árbol útil, un único paso `generic` (marcado con `generic_fallback`).
+  - `parts`: chequea que `u·dv` sea el integrando (si no: error "Try another u"); la integral que queda va en `auto`.
+  - `substitution`: reescribe en `u`; si quedan `x` libres → error accionable, sin cambiar de método. Al final, `back_substitution`.
+  - `partial_fractions`: división si es impropia, factorización, planteo con A, B, C…, constantes, descomposición. Factores de grado > 2 → error.
+  - Cada paso se verifica (`_zero_status`: simbólico, o numérico → `verified=False`); si uno falla, error y no se muestra nada. Siempre terminan `constant_of_integration` y `derivative_check`.
+  - Pasos sin cambio se omiten. `c·(ax+b)^n` va en un solo paso (`linear_power`).
+- Primitiva y definidas en `engines/calculus/integrals.py`:
   - Primitiva con `manualintegrate`; si deja una `Integral` sin resolver, fallback a `integrate()` marcado como `integrate_fallback`.
   - Toda primitiva se verifica derivando. Estados: `verified` (simplify da 0), `inconclusive` (simplify no pudo, pero numéricamente da ~0 en varios puntos), `incorrect`. El motor nunca devuelve una primitiva `incorrect`.
   - Definidas: `continuous_domain` para encontrar discontinuidades en [a, b]. Sin discontinuidades y con límites finitos → Barrow. Si no → impropia: se parte en las discontinuidades y se usan límites laterales de F (y límites en ±oo). Si algún límite no es finito → `status: "diverges"` con `explanation` (no es un error).
@@ -89,12 +103,13 @@ Las descripciones de las tools son lo único que el modelo sabe de ellas. Deben 
 
 ## Pizarrón (renderer)
 
-- HTML autocontenido + KaTeX (CDN cdnjs).
-- Una pantalla por paso: expresión grande al centro, nota al margen, navegación anterior/siguiente.
-- Lo que cambia, resaltado con `\color{}`; colores consistentes por rol (por ejemplo, `u` siempre del mismo color, `dv` de otro).
-- Último paso: verificación por derivada con ✓.
-- Estética "pizarrón", tipografía grande, sin ruido.
-- A futuro: servirlo inline en el chat con la extensión **MCP Apps** (en la que se basa también el Apps SDK de OpenAI). Al principio puede ser un HTML que el servidor genera y devuelve como ruta o URL.
+- Un solo template, `board/board.html`: HTML autocontenido + KaTeX 0.18.11 de cdnjs con SRI. Pizarrón oscuro, un paso por pantalla (antes ↓ después), nota y `aux` al margen, flechas del teclado, swipe, responsive (< 680 px una columna). Textos de la UI en español.
+- Tres formas de verlo, mismo HTML:
+  - **MCP App** (inline en claude.ai / ChatGPT): recurso `ui://step-by-step-math/board-v1.html` (`text/html;profile=mcp-app`, CSP `resourceDomains: [cdnjs]`). Solo `integrate` lleva `_meta.ui.resourceUri`. La página hace `ui/initialize` → `ui/notifications/initialized`, recibe `ui/notifications/tool-result`, toma `board_id` y llama `tools/call get_board`. Avisa su alto con `ui/notifications/size-changed` y ofrece pantalla completa si el host la soporta. Cambios incompatibles → subir la versión de la URI (los hosts la cachean).
+  - **Link** (`/board/<id>`, http): la página con el board embebido como JSON. Headers: CSP estricta, `Referrer-Policy: no-referrer`, `noindex`, `no-store`. **Sin el token del servidor**: compartir un pizarrón no da acceso al MCP.
+  - **Archivo** (stdio): se escribe en `$TMPDIR/step-by-step-math-boards/<id>.html` y se devuelve `board_path`.
+- `BoardStore`: ids `secrets.token_urlsafe(24)` (192 bits), vencen a la hora, máximo 200 (se descarta el más viejo). En memoria: un redeploy los borra.
+- Probarlo sin host: armar una página que embeba el recurso en un iframe y conteste el protocolo; screenshots con Firefox headless vía WebDriver BiDi (`--remote-debugging-port`), porque `--screenshot` saca la foto antes de que carguen las fuentes de KaTeX.
 
 ## Seguridad y robustez
 
@@ -128,6 +143,7 @@ Las descripciones de las tools son lo único que el modelo sabe de ellas. Deben 
 - **Autenticación = segmento secreto en la ruta** (`STEP_BY_STEP_MATH_PATH_TOKEN`, ≥ 32 caracteres URL-safe; sin él no arranca en http). La URL completa es el secreto. Motivo (verificado oct 2026): los conectores custom de claude.ai aceptan OAuth, sin auth y headers estáticos (estos en beta para pocas organizaciones); ChatGPT acepta OAuth o sin auth, sin campo de bearer. Ruta inválida → 404.
   - uvicorn corre con `access_log=False` para que el token no aparezca en los logs. No volver a activarlo sin redactar la ruta.
   - Siguiente paso de seguridad: OAuth (CIMD/DCR) cuando haga falta.
+- Links a pizarrones: `STEP_BY_STEP_MATH_PUBLIC_URL`, o `https://$RAILWAY_PUBLIC_DOMAIN` (Railway lo inyecta). Sin ninguno, `integrate` no devuelve `board_url`.
 - `STEP_BY_STEP_MATH_MAX_CONCURRENT` (default 2) limita cuántos procesos hijo existen a la vez; si están todos ocupados durante `timeout` segundos → `ComputationBusy`.
 - Memoria medida en el contenedor (python:3.14-slim): proceso principal ~110 MB RSS, forkserver ~110 MB, cada hijo ~130 MB de memoria virtual al calcular. El límite de 512 MB por hijo deja ~380 MB de margen. Límite de Railway recomendado: 1 GB.
 
@@ -135,11 +151,11 @@ Las descripciones de las tools son lo único que el modelo sabe de ellas. Deben 
 
 1. [x] Esqueleto MCPServer con `differentiate` andando en Claude Code
 2. [x] `integrate` (automático) y `verify_antiderivative`, devolviendo texto
-3. [ ] Definir `Step` y el motor de pasos para **partes** con `u` elegida por el usuario
-4. [ ] Pizarrón HTML para partes
-5. [ ] Sustitución y fracciones simples
-6. [ ] Transporte HTTP y deploy a Railway; conectar a claude.ai y ChatGPT (código y Dockerfile listos; falta el deploy y conectar)
-7. [ ] Pizarrón inline vía MCP Apps
+3. [x] Definir `Step` y el motor de pasos para **partes** con `u` elegida por el usuario
+4. [x] Pizarrón HTML para partes
+5. [x] Sustitución y fracciones simples
+6. [ ] Transporte HTTP y deploy a Railway; conectar a claude.ai y ChatGPT (deploy andando; falta conectar)
+7. [x] Pizarrón inline vía MCP Apps (falta probarlo en claude.ai y ChatGPT)
 8. [ ] Más dominios: límites, series y derivadas paso a paso (Análisis I); Álgebra (matrices, sistemas, determinantes); Análisis II (derivadas parciales, integrales múltiples); Lógica (tablas de verdad, deducción natural)
 
 El nombre del proyecto es genérico a propósito: cada materia se suma como un motor nuevo que devuelve `list[Step]`, sin tocar el servidor ni el renderer. Organizar el código como `engines/<subject>/` (por ejemplo `engines/calculus/`, `engines/algebra/`, `engines/logic/`).
@@ -149,11 +165,12 @@ El nombre del proyecto es genérico a propósito: cada materia se suma como un m
 - Cada regla con tests de ejercicios típicos de la guía de Análisis.
 - Test de propiedad: para cada integral del set, `diff(resultado) == integrando`.
 - Casos negativos: sustitución inválida, método que no aplica, expresión mal formada, timeout.
+- Todo el LaTeX de los pasos se valida con KaTeX real (node + `katex@0.18.11` instalado en `~/.cache/step-by-step-math/`; el test se saltea si no hay node/npm).
 - Más adelante: evals del flujo completo (¿el modelo elige bien la tool y respeta el método pedido?).
 
 ## Convenciones
 
-- **Todo el código en inglés**: nombres de archivos y módulos, identificadores, nombres de tools y parámetros, comentarios, docstrings, mensajes de error y tests (`integrate`, `Step`, `rule`, `engines/calculus/`). Lo único en español es lo que es input del usuario (alias como `sen`, `tg`, `ln`) y este CLAUDE.md.
+- **Todo el código en inglés**: nombres de archivos y módulos, identificadores, nombres de tools y parámetros, comentarios, docstrings, mensajes de error y tests (`integrate`, `Step`, `rule`, `engines/calculus/`). Lo único en español es lo que ve el usuario (las `note` de los pasos y los textos del pizarrón), lo que es input del usuario (alias como `sen`, `tg`, `ln`) y este CLAUDE.md.
 - Funciones del motor puras: reciben expresiones SymPy y devuelven `list[Step]`, sin I/O. El servidor solo adapta.
 - Nada de lógica matemática en el renderer: solo dibuja lo que recibe.
 

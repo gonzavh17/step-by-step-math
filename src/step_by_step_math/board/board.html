@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pizarrón</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.18.11/katex.min.css"
+      integrity="sha512-P0yrJ9fZYAz71mx0p68JgoPBpvjXPW2H0m+AXYSzzL9kT6AyDQ9eDQNLfqdjSYgphq4Hi6llKmesa6mdQgZOHw=="
+      crossorigin="anonymous" referrerpolicy="no-referrer">
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.18.11/katex.min.js"
+        integrity="sha512-hqULNlSWGNtoWUsYyRSpdOdww05s2hqNof5e1P4WxIVfLpL8ThFH/QqNNtax5fElgRkNZGkFyeKAmVvdZ/kpSA=="
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.18.11/contrib/auto-render.min.js"
+        integrity="sha512-0HzJcHCD+wBh9kNUUcm3DWH9IbNDfudsYyMD5EHwSuFK6aEsaa/UEPqqk4t0pm4bbmwR6A11yNsD7Q+nz6XF+Q=="
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<style>
+  :root {
+    --board: #18211d;
+    --board-edge: #0f1512;
+    --chalk: #eef2ec;
+    --chalk-dim: #a9b5ad;
+    --line: rgba(238, 242, 236, 0.14);
+    --accent: #86efac;
+    --warn: #fcd34d;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--board-edge); color: var(--chalk); }
+  body {
+    font-family: ui-rounded, "Segoe UI", system-ui, -apple-system, sans-serif;
+    font-size: 17px;
+    line-height: 1.45;
+  }
+  .page { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .embedded .page { min-height: 0; padding: 0; }
+  .board {
+    width: 100%;
+    max-width: 1100px;
+    background: var(--board);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 18px 22px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .embedded .board { border-radius: 0; border: 0; max-width: none; }
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .problem { font-size: 1.15rem; min-width: 0; overflow-x: auto; }
+  .meta { display: flex; align-items: center; gap: 10px; color: var(--chalk-dim); font-size: 0.9rem; }
+  .chip { border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; }
+  .icon-btn { background: none; border: 1px solid var(--line); color: var(--chalk-dim); border-radius: 8px;
+              padding: 2px 8px; cursor: pointer; font: inherit; }
+  .stage { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 22px; align-items: center; min-height: 260px; }
+  .exprs { min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .expr { width: 100%; overflow-x: auto; overflow-y: hidden; text-align: center; padding: 4px 0; }
+  .before { color: var(--chalk-dim); font-size: clamp(1rem, 2.4vw, 1.35rem); }
+  .after { font-size: clamp(1.25rem, 4vw, 2.2rem); }
+  .arrow { color: var(--chalk-dim); font-size: 1.3rem; line-height: 1; }
+  .margin { border-left: 1px dashed var(--line); padding-left: 18px; display: flex; flex-direction: column; gap: 12px; }
+  .note { margin: 0; }
+  .aux { margin: 0; display: flex; flex-direction: column; gap: 6px; font-size: 1.05rem; }
+  .aux div { overflow-x: auto; }
+  .badge { margin: 0; font-size: 0.95rem; }
+  .badge.ok { color: var(--accent); }
+  .badge.approx { color: var(--warn); }
+  .nav { display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid var(--line); padding-top: 12px; }
+  .nav > button {
+    background: transparent; color: var(--chalk); border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 16px; font: inherit; cursor: pointer; min-width: 120px; white-space: nowrap;
+  }
+  .nav > button:hover:not(:disabled) { border-color: var(--chalk-dim); }
+  .nav > button:disabled { opacity: 0.35; cursor: default; }
+  .counter { color: var(--chalk-dim); white-space: nowrap; }
+  .dots { display: flex; flex: 1; min-width: 0; gap: 6px; flex-wrap: wrap; justify-content: center; }
+  .dots button { width: 9px; height: 9px; min-width: 0; padding: 0; border-radius: 50%; border: 0; background: var(--line); cursor: pointer; }
+  .dots button[aria-current="step"] { background: var(--chalk); }
+  .status { padding: 32px 16px; text-align: center; color: var(--chalk-dim); }
+  .status.error { color: #fca5a5; }
+  [hidden] { display: none !important; }
+  @media (max-width: 680px) {
+    body { font-size: 16px; }
+    .board { padding: 14px 14px 12px; }
+    .stage { grid-template-columns: minmax(0, 1fr); gap: 14px; min-height: 0; }
+    .margin { border-left: 0; border-top: 1px dashed var(--line); padding: 12px 0 0; }
+    .nav > button { min-width: 0; padding: 10px 12px; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <main class="board" id="board" hidden>
+    <header class="top">
+      <div class="problem" id="problem"></div>
+      <div class="meta">
+        <span class="chip" id="method"></span>
+        <span class="counter" id="counter"></span>
+        <button class="icon-btn" id="fullscreen" type="button" title="Pantalla completa" hidden>⛶</button>
+      </div>
+    </header>
+    <section class="stage" aria-live="polite">
+      <div class="exprs">
+        <div class="expr before" id="before"></div>
+        <div class="arrow" aria-hidden="true">↓</div>
+        <div class="expr after" id="after"></div>
+      </div>
+      <aside class="margin">
+        <p class="note" id="note"></p>
+        <div class="aux" id="aux"></div>
+        <p class="badge" id="badge"></p>
+      </aside>
+    </section>
+    <nav class="nav">
+      <button id="prev" type="button">← Anterior</button>
+      <div class="dots" id="dots"></div>
+      <button id="next" type="button">Siguiente →</button>
+    </nav>
+  </main>
+  <div class="status" id="status">Cargando pizarrón…</div>
+</div>
+<script id="board-data" type="application/json">__BOARD_DATA__</script>
+<script>
+(function () {
+  "use strict";
+  // Presentation only: this script never computes math. It draws the LaTeX it receives.
+  var $ = function (id) { return document.getElementById(id); };
+  var METHOD_LABELS = { auto: "Automático", parts: "Partes", substitution: "Sustitución",
+                        partial_fractions: "Fracciones simples" };
+  var board = null;
+  var index = 0;
+  var embedded = window.parent !== window;
+
+  function katexLoaded() {
+    return new Promise(function (resolve) {
+      if (window.katex && window.renderMathInElement) { resolve(); return; }
+      window.addEventListener("load", function () { resolve(); });
+    });
+  }
+
+  function renderTex(el, tex, display) {
+    el.textContent = "";
+    if (!window.katex) { el.textContent = tex; return; }
+    try {
+      window.katex.render(tex, el, { displayMode: display, throwOnError: false, strict: "ignore", trust: false });
+    } catch (e) {
+      el.textContent = tex;
+    }
+  }
+
+  function renderNote(el, text) {
+    el.textContent = text;  // text first: never interpreted as HTML
+    if (window.renderMathInElement) {
+      window.renderMathInElement(el, { delimiters: [{ left: "\\(", right: "\\)", display: false }],
+                                       throwOnError: false, strict: "ignore" });
+    }
+  }
+
+  function colorFor(step, key) {
+    if (board.palette[key]) return board.palette[key];
+    for (var i = 0; i < step.highlight.length; i++) {
+      if (step.highlight[i].latex === key) return board.palette[step.highlight[i].role];
+    }
+    return null;
+  }
+
+  function show(i) {
+    var steps = board.steps;
+    index = Math.max(0, Math.min(steps.length - 1, i));
+    var step = steps[index];
+    renderTex($("before"), step.before, true);
+    renderTex($("after"), step.after, true);
+    renderNote($("note"), step.note);
+
+    var aux = $("aux");
+    aux.textContent = "";
+    Object.keys(step.aux).forEach(function (key) {
+      var row = document.createElement("div");
+      var color = colorFor(step, key);
+      var label = color ? "\\textcolor{" + color + "}{" + key + "}" : key;
+      renderTex(row, label + " = " + step.aux[key], false);
+      aux.appendChild(row);
+    });
+
+    var badge = $("badge");
+    badge.className = "badge";
+    if (!step.verified) {
+      badge.textContent = "≈ Verificado numéricamente";
+      badge.classList.add("approx");
+    } else if (step.rule === "derivative_check") {
+      badge.textContent = "✓ Verificado";
+      badge.classList.add("ok");
+    } else {
+      badge.textContent = "";
+    }
+
+    $("counter").textContent = "Paso " + (index + 1) + " de " + steps.length;
+    $("prev").disabled = index === 0;
+    $("next").disabled = index === steps.length - 1;
+    var dots = $("dots").children;
+    for (var d = 0; d < dots.length; d++) {
+      if (d === index) dots[d].setAttribute("aria-current", "step"); else dots[d].removeAttribute("aria-current");
+    }
+    reportSize();
+  }
+
+  function render(data) {
+    board = data;
+    $("status").hidden = true;
+    $("board").hidden = false;
+    renderTex($("problem"), data.problem, false);
+    $("method").textContent = METHOD_LABELS[data.method] || data.method;
+    var dots = $("dots");
+    dots.textContent = "";
+    if (data.steps.length <= 24) {
+      data.steps.forEach(function (_, i) {
+        var dot = document.createElement("button");
+        dot.type = "button";
+        dot.setAttribute("aria-label", "Paso " + (i + 1));
+        dot.addEventListener("click", function () { show(i); });
+        dots.appendChild(dot);
+      });
+    }
+    show(0);
+  }
+
+  function fail(message) {
+    $("board").hidden = true;
+    var status = $("status");
+    status.hidden = false;
+    status.textContent = message;
+    status.classList.add("error");
+    reportSize();
+  }
+
+  $("prev").addEventListener("click", function () { show(index - 1); });
+  $("next").addEventListener("click", function () { show(index + 1); });
+  document.addEventListener("keydown", function (e) {
+    if (!board) return;
+    if (e.key === "ArrowRight") { show(index + 1); e.preventDefault(); }
+    if (e.key === "ArrowLeft") { show(index - 1); e.preventDefault(); }
+  });
+  var touchX = null;
+  document.addEventListener("touchstart", function (e) { touchX = e.touches[0].clientX; }, { passive: true });
+  document.addEventListener("touchend", function (e) {
+    if (touchX === null || !board) return;
+    var dx = e.changedTouches[0].clientX - touchX;
+    touchX = null;
+    if (Math.abs(dx) > 50) show(index + (dx < 0 ? 1 : -1));
+  }, { passive: true });
+
+  // --- MCP Apps bridge (JSON-RPC over postMessage with the host) -------------------
+  var nextId = 1;
+  var pending = {};
+
+  function send(message) { window.parent.postMessage(message, "*"); }
+  function notify(method, params) { send({ jsonrpc: "2.0", method: method, params: params || {} }); }
+  function request(method, params) {
+    var id = nextId++;
+    send({ jsonrpc: "2.0", id: id, method: method, params: params || {} });
+    return new Promise(function (resolve, reject) {
+      pending[id] = { resolve: resolve, reject: reject };
+      setTimeout(function () {
+        if (pending[id]) { delete pending[id]; reject(new Error("timeout")); }
+      }, 20000);
+    });
+  }
+
+  // Height of the content, not of the iframe (scrollHeight never goes below the
+  // iframe's own height, so the board could grow but never shrink).
+  var lastHeight = 0;
+  function reportSize() {
+    if (!embedded) return;
+    var height = Math.ceil(document.querySelector(".page").getBoundingClientRect().height);
+    if (height === lastHeight) return;
+    lastHeight = height;
+    notify("ui/notifications/size-changed", { height: height });
+  }
+
+  function onToolResult(result) {
+    if (!result || result.isError) {
+      var text = result && result.content && result.content[0] && result.content[0].text;
+      fail(text || "La herramienta devolvió un error.");
+      return;
+    }
+    var boardId = result.structuredContent && result.structuredContent.board_id;
+    if (!boardId) { fail("No hay pizarrón para este resultado."); return; }
+    request("tools/call", { name: "get_board", arguments: { board_id: boardId } })
+      .then(function (r) {
+        if (r.isError || !r.structuredContent) {
+          fail((r.content && r.content[0] && r.content[0].text) || "No se pudo cargar el pizarrón.");
+          return;
+        }
+        katexLoaded().then(function () { render(r.structuredContent); });
+      })
+      .catch(function () { fail("No se pudo cargar el pizarrón."); });
+  }
+
+  window.addEventListener("message", function (event) {
+    if (event.source !== window.parent) return;
+    var msg = event.data;
+    if (!msg || msg.jsonrpc !== "2.0") return;
+    if (msg.id !== undefined && !msg.method) {  // a response to one of our requests
+      var p = pending[msg.id];
+      if (!p) return;
+      delete pending[msg.id];
+      if (msg.error) p.reject(msg.error); else p.resolve(msg.result);
+      return;
+    }
+    if (msg.method === "ui/notifications/tool-result") { onToolResult(msg.params); return; }
+    if (msg.id !== undefined) send({ jsonrpc: "2.0", id: msg.id, result: {} });  // teardown, ping, ...
+  });
+
+  function startApp() {
+    document.documentElement.classList.add("embedded");
+    request("ui/initialize", {
+      appInfo: { name: "step-by-step-math-board", version: "1.0.0" },
+      appCapabilities: { availableDisplayModes: ["inline", "fullscreen"] },
+      protocolVersion: "2026-01-26"
+    }).then(function (init) {
+      notify("ui/notifications/initialized", {});
+      var modes = (init && init.hostContext && init.hostContext.availableDisplayModes) || [];
+      if (modes.indexOf("fullscreen") >= 0) {
+        var button = $("fullscreen");
+        button.hidden = false;
+        button.addEventListener("click", function () {
+          request("ui/request-display-mode", { mode: "fullscreen" }).catch(function () {});
+        });
+      }
+    }).catch(function () { /* host without ui/initialize: wait for tool-result anyway */ });
+    if (window.ResizeObserver) new ResizeObserver(reportSize).observe(document.body);
+  }
+
+  var data = null;
+  try { data = JSON.parse($("board-data").textContent); } catch (e) { data = null; }
+  if (data) {
+    katexLoaded().then(function () { render(data); });  // standalone page: data is embedded
+  } else if (embedded) {
+    startApp();
+  } else {
+    fail("Este pizarrón no tiene datos.");
+  }
+})();
+</script>
+</body>
+</html>

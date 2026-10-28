@@ -7,6 +7,7 @@
   improper integrals are computed with one-sided limits of the antiderivative.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -85,10 +86,13 @@ def _drop_step_derivatives(expr: sp.Expr) -> sp.Expr:
     integrate() adds floor() terms to make some antiderivatives continuous
     (e.g. 1/(2 + cos(x))).
     """
-    return expr.replace(
-        lambda e: isinstance(e, (sp.Derivative, sp.Subs)) and e.has(sp.floor, sp.ceiling),
-        lambda e: sp.Integer(0),
-    )
+    def is_step_derivative(kind: type) -> Callable[[sp.Basic], bool]:
+        return lambda e: isinstance(e, kind) and e.has(sp.Derivative) and e.has(sp.floor, sp.ceiling)
+
+    # Subs first: replace() works bottom-up, and zeroing only the inner Derivative
+    # would leave an unevaluated Subs(0, ...) behind.
+    expr = expr.replace(is_step_derivative(sp.Subs), lambda e: sp.Integer(0))
+    return expr.replace(is_step_derivative(sp.Derivative), lambda e: sp.Integer(0))
 
 
 def _numerically_zero(difference: sp.Expr, integrand: sp.Expr, x: sp.Symbol) -> bool:

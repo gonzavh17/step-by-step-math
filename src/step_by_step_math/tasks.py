@@ -13,10 +13,11 @@ from step_by_step_math.engines.calculus.derivatives import differentiate
 from step_by_step_math.engines.calculus.integrals import (
     Verification,
     definite_integral,
-    indefinite_integral,
     verify_antiderivative,
 )
+from step_by_step_math.engines.calculus.integration_steps import definite_step, integrate_with_steps
 from step_by_step_math.parsing import InputError, parse_bound, parse_expression, parse_variable
+from step_by_step_math.steps import PALETTE
 
 INCONCLUSIVE_NOTE = (
     "Numerically it looks correct (the difference is ~0 at several points), "
@@ -40,44 +41,78 @@ def differentiate_task(expression: str, variable: str) -> dict[str, Any]:
     return {"result": sp.sstr(derivative), "latex": _latex(derivative), "variable": x.name}
 
 
-def integrate_task(expression: str, variable: str, lower: str | None, upper: str | None) -> dict[str, Any]:
+METHODS = ("auto", "parts", "substitution", "partial_fractions")
+
+
+def integrate_task(
+    expression: str,
+    variable: str,
+    lower: str | None,
+    upper: str | None,
+    method: str = "auto",
+    u: str | None = None,
+    dv: str | None = None,
+) -> dict[str, Any]:
+    """Solve the integral step by step. The "board" key holds the steps for the whiteboard."""
     f = parse_expression(expression)
     x = parse_variable(variable)
     if (lower is None) != (upper is None):
         raise InputError("Give both limits (lower and upper) for a definite integral, or neither.")
+    if method not in METHODS:
+        raise InputError(f"Unknown method '{method}'. Use one of: {', '.join(METHODS)}.")
+    if u is not None and method not in ("parts", "substitution"):
+        raise InputError("u only applies to method 'parts' or 'substitution'.")
+    if dv is not None and method != "parts":
+        raise InputError("dv only applies to method 'parts'.")
+    u_expr = parse_expression(u) if u is not None else None
+    dv_expr = parse_expression(dv) if dv is not None else None
 
-    if lower is None:
-        integral = indefinite_integral(f, x)
-        F = integral.antiderivative.expr
-        c = _constant_name(f, F)
-        out: dict[str, Any] = {
-            "kind": "indefinite",
-            "result": f"{sp.sstr(F)} + {c}",
-            "latex": f"{_latex(F)} + {c}",
-            "method": integral.antiderivative.method,
-            "verification": integral.verification.status,
-        }
-        if integral.verification.status == "inconclusive":
-            out["warnings"] = [INCONCLUSIVE_NOTE]
-        return out
+    definite = lower is not None
+    c = _constant_name(f, *(e for e in (u_expr, dv_expr) if e is not None))
+    solved = integrate_with_steps(f, x, method, u_expr, dv_expr, constant=None if definite else c)  # type: ignore[arg-type]
+    F = solved.antiderivative
+    steps = list(solved.steps)
+    out: dict[str, Any] = {"kind": "definite" if definite else "indefinite", "method": method}
 
-    a, b = parse_bound(lower), parse_bound(upper)
-    integral = definite_integral(f, x, a, b)
-    out = {
-        "kind": "definite",
-        "status": integral.status,
-        "result": sp.sstr(integral.value) if integral.value is not None else None,
-        "latex": _latex(integral.value) if integral.value is not None else None,
-        "method": integral.method,
-        "verification": integral.verification.status,
-        "improper": integral.improper,
+    if not definite:
+        problem = sp.Integral(f, x)
+        out["result"] = f"{sp.sstr(F)} + {c}"
+        out["latex"] = f"{_latex(F)} + {c}"
+        out["verification"] = solved.verification
+        board_result = out["latex"]
+    else:
+        a, b = parse_bound(lower), parse_bound(upper)
+        problem = sp.Integral(f, (x, a, b))
+        integral = definite_integral(f, x, a, b)
+        steps.append(definite_step(F, x, a, b, integral))
+        out["status"] = integral.status
+        out["result"] = sp.sstr(integral.value) if integral.value is not None else None
+        out["latex"] = _latex(integral.value) if integral.value is not None else None
+        out["verification"] = (
+            "verified" if solved.verification == "verified" and integral.verification.status == "verified"
+            else "inconclusive"
+        )
+        out["improper"] = integral.improper
+        if integral.discontinuities:
+            out["discontinuities"] = [sp.sstr(p) for p in integral.discontinuities]
+        if integral.explanation:
+            out["explanation"] = integral.explanation
+        if integral.warnings:
+            out["warnings"] = integral.warnings
+        board_result = out["latex"] if out["latex"] is not None else r"\text{diverge}"
+
+    if solved.generic_fallback:
+        out["generic_fallback"] = True
+    if out["verification"] == "inconclusive":
+        out.setdefault("warnings", []).append(INCONCLUSIVE_NOTE)
+    out["steps"] = len(steps)
+    out["board"] = {
+        "problem": _latex(problem),
+        "method": method,
+        "steps": [step.to_dict() for step in steps],
+        "palette": PALETTE,
+        "result": board_result,
     }
-    if integral.discontinuities:
-        out["discontinuities"] = [sp.sstr(p) for p in integral.discontinuities]
-    if integral.explanation:
-        out["explanation"] = integral.explanation
-    if integral.warnings:
-        out["warnings"] = integral.warnings
     return out
 
 
