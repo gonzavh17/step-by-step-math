@@ -47,6 +47,30 @@ Each computation runs in a separate process that is killed if it exceeds its lim
 |---|---|---|
 | `STEP_BY_STEP_MATH_TIMEOUT` | `10` | seconds per computation |
 | `STEP_BY_STEP_MATH_MEMORY_MB` | `512` | memory limit per computation (`0` = no limit) |
+| `STEP_BY_STEP_MATH_MAX_CONCURRENT` | `2` | computations running at the same time |
+| `STEP_BY_STEP_MATH_TRANSPORT` | `stdio` | `stdio` or `http` |
+| `STEP_BY_STEP_MATH_PATH_TOKEN` | — | required with `http`: secret path segment, at least 32 URL-safe characters |
+| `PORT` | `8000` | HTTP port (set by Railway) |
+
+## Deploy
+
+The repo includes a `Dockerfile` (uv, `python:3.14-slim`) that starts the server over streamable HTTP:
+
+- MCP endpoint: `https://<your-domain>/mcp/<STEP_BY_STEP_MATH_PATH_TOKEN>`
+- Health check: `GET /health`
+
+**The full MCP URL is the secret.** Custom connectors in claude.ai and ChatGPT cannot reliably send a fixed auth header, so the server is protected by an unguessable path segment instead. Anyone with the URL can use the server: don't share it, and rotate the token (redeploy with a new value) if it leaks. Any other path under `/mcp` returns 404, and request paths are not logged.
+
+Run the image locally:
+
+```bash
+podman build -t step-by-step-math .   # or docker
+TOKEN=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+podman run --rm -p 8000:8000 -e STEP_BY_STEP_MATH_PATH_TOKEN="$TOKEN" step-by-step-math
+npx @modelcontextprotocol/inspector --cli "http://127.0.0.1:8000/mcp/$TOKEN" --transport http --method tools/list
+```
+
+On Railway: deploy the repo (the Dockerfile is detected automatically), set `STEP_BY_STEP_MATH_PATH_TOKEN`, generate a public domain and set the health check path to `/health`. Railway sets `PORT`.
 
 ## License
 

@@ -8,7 +8,9 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "mcp>=2.3,<3",
+    "starlette>=1.10",
     "sympy>=1.14",
+    "uvicorn>=0.54",
 ]
 
 license = "MIT"

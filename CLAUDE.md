@@ -123,9 +123,13 @@ Las descripciones de las tools son lo único que el modelo sabe de ellas. Deben 
 
 ## Deploy
 
-- Fase 1: Railway (plan Hobby). Transporte HTTP (streamable). Configurar límites de recursos y autenticación básica, porque la URL es pública.
-- Fase 2: homelab propio + Cloudflare Tunnel.
-- Pasar de stdio a HTTP debería ser cambiar el `server.run(...)`; el código de las tools no cambia.
+- Fase 1: Railway (plan Hobby), con el `Dockerfile` del repo. Fase 2: homelab propio + Cloudflare Tunnel.
+- Transporte por `STEP_BY_STEP_MATH_TRANSPORT`: `stdio` (default, Claude Code) o `http` (la imagen ya lo trae en `http`). En http: streamable HTTP **stateless + JSON**, `0.0.0.0:$PORT`, endpoint `/mcp/<token>`, `GET /health` sin token.
+- **Autenticación = segmento secreto en la ruta** (`STEP_BY_STEP_MATH_PATH_TOKEN`, ≥ 32 caracteres URL-safe; sin él no arranca en http). La URL completa es el secreto. Motivo (verificado oct 2026): los conectores custom de claude.ai aceptan OAuth, sin auth y headers estáticos (estos en beta para pocas organizaciones); ChatGPT acepta OAuth o sin auth, sin campo de bearer. Ruta inválida → 404.
+  - uvicorn corre con `access_log=False` para que el token no aparezca en los logs. No volver a activarlo sin redactar la ruta.
+  - Siguiente paso de seguridad: OAuth (CIMD/DCR) cuando haga falta.
+- `STEP_BY_STEP_MATH_MAX_CONCURRENT` (default 2) limita cuántos procesos hijo existen a la vez; si están todos ocupados durante `timeout` segundos → `ComputationBusy`.
+- Memoria medida en el contenedor (python:3.14-slim): proceso principal ~110 MB RSS, forkserver ~110 MB, cada hijo ~130 MB de memoria virtual al calcular. El límite de 512 MB por hijo deja ~380 MB de margen. Límite de Railway recomendado: 1 GB.
 
 ## Roadmap
 
@@ -134,7 +138,7 @@ Las descripciones de las tools son lo único que el modelo sabe de ellas. Deben 
 3. [ ] Definir `Step` y el motor de pasos para **partes** con `u` elegida por el usuario
 4. [ ] Pizarrón HTML para partes
 5. [ ] Sustitución y fracciones simples
-6. [ ] Transporte HTTP y deploy a Railway; conectar a claude.ai y ChatGPT
+6. [ ] Transporte HTTP y deploy a Railway; conectar a claude.ai y ChatGPT (código y Dockerfile listos; falta el deploy y conectar)
 7. [ ] Pizarrón inline vía MCP Apps
 8. [ ] Más dominios: límites, series y derivadas paso a paso (Análisis I); Álgebra (matrices, sistemas, determinantes); Análisis II (derivadas parciales, integrales múltiples); Lógica (tablas de verdad, deducción natural)
 
@@ -152,3 +156,8 @@ El nombre del proyecto es genérico a propósito: cada materia se suma como un m
 - **Todo el código en inglés**: nombres de archivos y módulos, identificadores, nombres de tools y parámetros, comentarios, docstrings, mensajes de error y tests (`integrate`, `Step`, `rule`, `engines/calculus/`). Lo único en español es lo que es input del usuario (alias como `sen`, `tg`, `ln`) y este CLAUDE.md.
 - Funciones del motor puras: reciben expresiones SymPy y devuelven `list[Step]`, sin I/O. El servidor solo adapta.
 - Nada de lógica matemática en el renderer: solo dibuja lo que recibe.
+
+## Pendientes
+
+- **Raíces cúbicas de negativos:** SymPy toma `x**(1/3)` como raíz principal (compleja si x < 0), así que una definida sobre negativos puede dar un valor complejo (hoy solo se avisa en `warnings`). Usar raíz real por defecto: parsear `cbrt(...)` y `x**(1/3)` (y en general `x**(p/q)` con q impar) como `real_root`, y revisar que `manualintegrate`, la verificación y `continuous_domain` sigan funcionando con esa forma.
+- **Decimales exactos:** un límite como `1.5` da un resultado en coma flotante (`1.125000…`). Evaluar la transformación `rationalize` en el parseo para que `1.5` se tome como `3/2`.

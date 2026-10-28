@@ -81,3 +81,9 @@ async def test_timeout_is_tool_error(monkeypatch):
     r = await call("integrate", {"expression": "(x**7 + 3)/(x**13 + x + 1)"})
     assert r.is_error
     assert "more than 1 s" in r.content[0].text
+
+
+async def test_integrate_numeric_limits():
+    r = await call("integrate", {"expression": "x**2", "lower": 0, "upper": 1.5})
+    assert not r.is_error
+    assert r.structured_content["result"] == "1.12500000000000"
