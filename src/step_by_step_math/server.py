@@ -1,14 +1,15 @@
-"""MCP server. Thin layer: validates input, calls the engine and adapts the response."""
+"""MCP server. Thin layer: runs each task in the sandbox and adapts errors."""
 
-from typing import TypedDict
+from collections.abc import Callable
+from typing import Any, Literal, NotRequired, TypedDict
 
-import sympy as sp
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
 
-from step_by_step_math.engines.calculus.derivatives import differentiate as engine_differentiate
-from step_by_step_math.parsing import InputError, parse_expression, parse_variable
+from step_by_step_math import tasks
+from step_by_step_math.errors import UserFacingError
+from step_by_step_math.sandbox import default_memory_mb, default_timeout, run_isolated, warm_up
 
 server = MCPServer(
     name="step-by-step-math",
@@ -18,6 +19,21 @@ server = MCPServer(
     ),
 )
 
+_PURE = ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False)
+
+_SYNTAX = (
+    "Expression syntax (SymPy): x**2 (or x^2), 3*x (explicit multiplication), "
+    "sin(x), cos(x), tan(x), exp(x), log(x) (natural log), sqrt(x), asin(x), atan(x). "
+    "Also accepts sen, tg and ln. Constants: pi, E, oo (infinity)."
+)
+
+
+def _run(task: Callable[..., Any], *args: Any) -> Any:
+    try:
+        return run_isolated(task, *args)
+    except UserFacingError as e:
+        raise ToolError(str(e)) from None
+
 
 class DerivativeResult(TypedDict):
     result: str  # SymPy syntax, reusable as input
@@ -25,33 +41,82 @@ class DerivativeResult(TypedDict):
     variable: str
 
 
+class IntegralResult(TypedDict):
+    kind: Literal["indefinite", "definite"]
+    result: str | None  # includes "+ C" when indefinite; None when it diverges
+    latex: str | None
+    method: Literal["manualintegrate", "integrate_fallback"]
+    verification: Literal["verified", "inconclusive"]
+    status: NotRequired[Literal["converges", "diverges"]]
+    improper: NotRequired[bool]
+    discontinuities: NotRequired[list[str]]
+    explanation: NotRequired[str]
+    warnings: NotRequired[list[str]]
+
+
+class VerificationResult(TypedDict):
+    status: Literal["verified", "inconclusive", "incorrect"]
+    difference: NotRequired[str]
+    difference_latex: NotRequired[str]
+    note: NotRequired[str]
+
+
 @server.tool(
     description=(
         "Differentiate an expression with respect to a variable using a symbolic engine (SymPy). "
         "ALWAYS use it when a derivative is needed: do not differentiate by hand or adjust the result. "
-        "'expression' syntax (SymPy): x**2 (or x^2), 3*x (explicit multiplication), "
-        "sin(x), cos(x), tan(x), exp(x), log(x) (natural log), sqrt(x), asin(x), atan(x). "
-        "Also accepts sen, tg and ln. Constants: pi, E. "
-        "Returns the result in SymPy syntax and in LaTeX."
+        f"{_SYNTAX} Returns the result in SymPy syntax and in LaTeX."
     ),
-    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False),
+    annotations=_PURE,
 )
 def differentiate(expression: str, variable: str = "x") -> DerivativeResult:
-    try:
-        expr = parse_expression(expression)
-        var = parse_variable(variable)
-    except InputError as e:
-        raise ToolError(str(e)) from None
+    return _run(tasks.differentiate_task, expression, variable)
 
-    derivative = engine_differentiate(expr, var)
-    return {
-        "result": sp.sstr(derivative),
-        "latex": sp.latex(derivative, ln_notation=True),
-        "variable": var.name,
-    }
+
+@server.tool(
+    description=(
+        "Integrate an expression with a symbolic engine (SymPy), indefinite or definite. "
+        "NEVER integrate by hand and never change the result: show it as returned. "
+        "Indefinite: omit 'lower' and 'upper'; the result includes + C. "
+        "Definite: give both limits (constants like 0, pi/2, E, oo, -oo). Discontinuities in the "
+        "interval are detected and handled as improper integrals; if it diverges, "
+        "status is 'diverges' with an explanation. "
+        "'method' says whether a textbook-style method (manualintegrate) or the generic fallback was used. "
+        "'verification' is 'verified' (checked by differentiating) or 'inconclusive' (only numerically). "
+        "If the user brings their own antiderivative, use verify_antiderivative instead. "
+        f"{_SYNTAX}"
+    ),
+    annotations=_PURE,
+)
+def integrate(
+    expression: str,
+    variable: str = "x",
+    lower: str | None = None,
+    upper: str | None = None,
+) -> IntegralResult:
+    return _run(tasks.integrate_task, expression, variable, lower, upper)
+
+
+@server.tool(
+    description=(
+        "Check whether 'antiderivative' is a correct antiderivative of 'integrand' by differentiating it "
+        "with a symbolic engine (SymPy). Use it whenever the user brings their own integration result: "
+        "never compare or check by hand. Results that differ by a constant are correct. "
+        "status: 'verified' (proven), 'inconclusive' (numerically correct but not proven symbolically) "
+        "or 'incorrect' (with the simplified difference d/dx(antiderivative) - integrand). "
+        f"{_SYNTAX} A '+ C' in the antiderivative is fine."
+    ),
+    annotations=_PURE,
+)
+def verify_antiderivative(integrand: str, antiderivative: str, variable: str = "x") -> VerificationResult:
+    return _run(tasks.verify_task, integrand, antiderivative, variable)
 
 
 def main() -> None:
+    # Fail fast on a bad STEP_BY_STEP_MATH_TIMEOUT / STEP_BY_STEP_MATH_MEMORY_MB.
+    default_timeout()
+    default_memory_mb()
+    warm_up()
     server.run("stdio")
 
 

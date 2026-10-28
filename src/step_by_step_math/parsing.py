@@ -15,13 +15,15 @@ from sympy.parsing.sympy_parser import (
     standard_transformations,
 )
 
+from step_by_step_math.errors import UserFacingError
+
 MAX_EXPRESSION_LENGTH = 200
 MAX_VARIABLE_LENGTH = 10
 
 SYNTAX_HELP = "Use SymPy syntax: x**2, 3*x, sin(x), exp(x), log(x), sqrt(x)."
 
 
-class InputError(ValueError):
+class InputError(UserFacingError, ValueError):
     """Invalid input. The message is short and safe to show to the model."""
 
 
@@ -38,7 +40,7 @@ FUNCTIONS: dict[str, object] = {
     "arcsen": sp.asin, "arctg": sp.atan,
     "senh": sp.sinh, "tgh": sp.tanh,
 }
-CONSTANTS: dict[str, object] = {"pi": sp.pi, "E": sp.E, "e": sp.E}
+CONSTANTS: dict[str, object] = {"pi": sp.pi, "E": sp.E, "e": sp.E, "oo": sp.oo}
 
 # Names `parse_expr` needs to build numbers and symbols.
 _INTERNALS: dict[str, object] = {
@@ -98,3 +100,16 @@ def parse_variable(name: str) -> sp.Symbol:
     if name in RESERVED_NAMES:
         raise InputError(f"'{name}' is a reserved name; use another variable (x, t, ...).")
     return sp.Symbol(name)
+
+
+def parse_bound(text: str) -> sp.Expr:
+    """Parse an integration limit: a real constant such as 0, pi/2, E or oo."""
+    bound = parse_expression(text)
+    if bound.free_symbols:
+        raise InputError(
+            f"Integration limit '{text}' must be a constant (like 0, 2, pi/2, E or oo), "
+            "without variables."
+        )
+    if bound.is_extended_real is not True:
+        raise InputError(f"Integration limit '{text}' must be a real number or oo/-oo.")
+    return bound

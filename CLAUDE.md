@@ -25,7 +25,10 @@ Uso personal primero (estudiar Análisis en UTN). Conectable a Claude y ChatGPT.
 LLM (Claude / ChatGPT)
    │  llama tools con datos estructurados
    ▼
-Servidor MCP (MCPServer)        ← capa fina: validación de input, timeouts
+Servidor MCP (MCPServer)        ← capa fina: adapta errores a ToolError
+   │
+   ▼
+Sandbox (proceso hijo)          ← timeout + límite de memoria; corre tasks.py (parseo → motor → dict)
    │
    ▼
 Motores por dominio             ← análisis (SymPy); más adelante lógica, límites, series
@@ -58,8 +61,8 @@ Cada regla declara qué subexpresión toca: así el renderer sabe qué resaltar,
 
 | Tool | Input | Output al modelo |
 |---|---|---|
-| `integrate` | `expression`, `variable`, `method`, params del método (`u`, `dv`, ...) | resultado, método, n° de pasos, estado |
-| `verify_antiderivative` | `integrand`, `antiderivative`, `variable` | ok / no ok + diferencia simplificada |
+| `integrate` | `expression`, `variable`, `lower`/`upper` opcionales; desde el paso 3: `method` y sus params (`u`, `dv`, ...) | `result` (con `+ C`), `latex`, `method` (`manualintegrate` / `integrate_fallback`), `verification`; en definidas `status` (`converges`/`diverges`), `improper`, `discontinuities`, `explanation`, `warnings` |
+| `verify_antiderivative` | `integrand`, `antiderivative`, `variable` | `status` (`verified` / `inconclusive` / `incorrect`) + diferencia simplificada y nota |
 | `differentiate` | `expression`, `variable` | resultado (texto + LaTeX) |
 
 Mantener pocas tools: las definiciones se mandan en cada mensaje y cada una suma tokens de entrada.
@@ -73,8 +76,16 @@ Las descripciones de las tools son lo único que el modelo sabe de ellas. Deben 
   - **Sustitución:** `Integral(...).transform(x, u_expr)`. Calcular `du`, reescribir y verificar que no queden `x` libres.
   - **Partes:** recibir `u` (y opcionalmente `dv`); calcular `du` y `v`; armar `u·v − ∫v du`; la integral restante se resuelve recursivamente (con método automático si el usuario no especificó).
   - **Fracciones simples:** `sp.apart()`; mostrar el planteo con A, B, C como en clase.
-- Constante de integración `+ C` siempre explícita al final.
-- Integrales definidas: chequear discontinuidades en el intervalo antes de aplicar Barrow.
+- Constante de integración `+ C` siempre explícita al final (se agrega al formatear, no dentro de la expresión).
+- Implementado en `engines/calculus/integrals.py`:
+  - Primitiva con `manualintegrate`; si deja una `Integral` sin resolver, fallback a `integrate()` marcado como `integrate_fallback`.
+  - Toda primitiva se verifica derivando. Estados: `verified` (simplify da 0), `inconclusive` (simplify no pudo, pero numéricamente da ~0 en varios puntos), `incorrect`. El motor nunca devuelve una primitiva `incorrect`.
+  - Definidas: `continuous_domain` para encontrar discontinuidades en [a, b]. Sin discontinuidades y con límites finitos → Barrow. Si no → impropia: se parte en las discontinuidades y se usan límites laterales de F (y límites en ±oo). Si algún límite no es finito → `status: "diverges"` con `explanation` (no es un error).
+  - El valor de una definida se contrasta con cuadratura numérica (y con `integrate()` si la cuadratura no es confiable, p. ej. colas oscilantes).
+- Limitaciones conocidas de SymPy 1.14:
+  - `manualintegrate` no resuelve `1/cos(x)**2` (sí `sec(x)**2`) ni `1/cos(x)` → caen al fallback.
+  - `x**(1/3)` es la raíz principal (compleja para x < 0): una definida sobre negativos puede dar un valor complejo. Se avisa en `warnings`.
+  - El fallback con `Abs` puede devolver primitivas mal ramificadas; la verificación las rechaza.
 
 ## Pizarrón (renderer)
 
@@ -87,7 +98,11 @@ Las descripciones de las tools son lo único que el modelo sabe de ellas. Deben 
 
 ## Seguridad y robustez
 
-- **Timeout por cálculo** (por ejemplo, 10 s): SymPy puede quedarse colgado con integrales feas. Correr el cálculo en un proceso o thread con límite y devolver un error claro si se pasa.
+- **Sandbox por cálculo** (`sandbox.run_isolated`): cada tool corre su task (`tasks.py`: parseo + motor + formato) en un proceso hijo con timeout y límite de memoria, y se mata con `kill()` si se pasa. El parseo también va adentro, porque puede colgarse (`9**9**9**9`).
+  - Por qué proceso: un thread no se puede matar, y `signal.alarm` solo anda en el thread principal (el SDK corre las tools sync en un worker thread).
+  - `forkserver` con `__main__`, `sympy` y `tasks` precargados: ~6 ms por llamada. Sin `__main__` en la precarga, cada hijo reimporta el SDK de MCP (~0,5 s). `fork` a secas no es seguro desde un proceso con threads.
+  - Config: `STEP_BY_STEP_MATH_TIMEOUT` (segundos, default 10) y `STEP_BY_STEP_MATH_MEMORY_MB` (`RLIMIT_AS`, default 512, 0 = sin límite). Un hijo ya arranca en ~350 MB de memoria virtual: no bajar mucho de 512.
+  - Errores del sandbox y del dominio heredan de `errors.UserFacingError`; el servidor los convierte en `ToolError` con el mismo mensaje.
 - Parsear input con `sympy.parsing.sympy_parser.parse_expr` con transformaciones controladas, no `eval` ni `sympify` sobre texto arbitrario sin restricciones.
 - Limitar el largo de la expresión de entrada.
 - Errores para el modelo: cortos y accionables ("la sustitución u = ... deja x libres; probá con otra u").
@@ -115,7 +130,7 @@ Las descripciones de las tools son lo único que el modelo sabe de ellas. Deben 
 ## Roadmap
 
 1. [x] Esqueleto MCPServer con `differentiate` andando en Claude Code
-2. [ ] `integrate` (automático) y `verify_antiderivative`, devolviendo texto
+2. [x] `integrate` (automático) y `verify_antiderivative`, devolviendo texto
 3. [ ] Definir `Step` y el motor de pasos para **partes** con `u` elegida por el usuario
 4. [ ] Pizarrón HTML para partes
 5. [ ] Sustitución y fracciones simples
